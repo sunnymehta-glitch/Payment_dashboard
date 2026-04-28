@@ -140,13 +140,13 @@ async function initializeGoogleSheets() {
   try {
     const creds = await loadGoogleCredentials();
 
-    // Build JWT auth client directly via googleapis
-    const auth = new google.auth.JWT(
-      creds.client_email,
-      null,
-      creds.private_key,
-      ['https://www.googleapis.com/auth/spreadsheets']
-    );
+    // Use options-object form — positional args are deprecated in google-auth-library v9
+    console.log(`[Sheets] 🔍 private_key length=${creds.private_key.length}, starts="${creds.private_key.substring(0, 36)}"`);
+    const auth = new google.auth.JWT({
+      email: creds.client_email,
+      key:   creds.private_key,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
 
     console.log('[Sheets] 🔄 Authorizing JWT...');
     await auth.authorize();
