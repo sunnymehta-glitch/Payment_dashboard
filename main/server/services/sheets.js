@@ -12,18 +12,43 @@ const GOOGLE_CREDS_JSON = process.env.GOOGLE_CREDS_JSON || process.env.GOOGLE_CR
 let doc = null;
 let sheet = null;
 let isGoogleSheetsConfigured = false;
+let lastInitError = null; // Store last init error for diagnostics
+
+// ── Startup diagnostics (visible in Render/production logs) ──────────────────
+console.log('[Sheets] 🔍 Env diagnostics at module load:');
+console.log(`  SHEET_ID           : ${SHEET_ID ? SHEET_ID : '❌ NOT SET'}`);
+console.log(`  GOOGLE_CREDS_PATH  : ${GOOGLE_CREDS_PATH ? GOOGLE_CREDS_PATH : '(not set)'}`);
+console.log(`  GOOGLE_CREDS_JSON  : ${GOOGLE_CREDS_JSON ? `✅ SET (length=${GOOGLE_CREDS_JSON.length})` : '❌ NOT SET'}`);
+console.log(`  GOOGLE_CREDENTIALS_JSON: ${process.env.GOOGLE_CREDENTIALS_JSON ? `✅ SET (length=${process.env.GOOGLE_CREDENTIALS_JSON.length})` : '(not set)'}`);
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Initialize Google Sheets connection
  */
 async function initializeGoogleSheets() {
-  if (!SHEET_ID || (!GOOGLE_CREDS_PATH && !GOOGLE_CREDS_JSON)) {
-    console.warn('⚠️ Google Sheets credentials not found. Using CSV fallback.');
+  lastInitError = null;
+
+  if (!SHEET_ID) {
+    const msg = 'SHEET_ID env var is not set — Google Sheets disabled, using CSV fallback.';
+    console.warn('[Sheets] ⚠️', msg);
+    lastInitError = msg;
     return false;
   }
 
+  if (!GOOGLE_CREDS_PATH && !GOOGLE_CREDS_JSON) {
+    const msg = 'Neither GOOGLE_CREDS_PATH nor GOOGLE_CREDS_JSON is set — Google Sheets disabled, using CSV fallback.';
+    console.warn('[Sheets] ⚠️', msg);
+    lastInitError = msg;
+    return false;
+  }
+
+  console.log('[Sheets] 🔄 Starting Google Sheets initialization...');
+
   try {
     const credentials = await loadGoogleCredentials();
+    console.log(`[Sheets] ✅ Credentials loaded. client_email=${credentials.client_email}`);
+    console.log(`[Sheets]    private_key present: ${credentials.private_key ? 'YES' : '❌ NO'}`);
+    console.log(`[Sheets]    private_key starts with: ${credentials.private_key ? credentials.private_key.substring(0, 40) : 'N/A'}`);
 
     // Initialize JWT auth
     const serviceAccountAuth = new JWT({
@@ -33,20 +58,33 @@ async function initializeGoogleSheets() {
     });
 
     // Initialize Google Spreadsheet
+    console.log(`[Sheets] 🔄 Connecting to spreadsheet ID: ${SHEET_ID}`);
     doc = new GoogleSpreadsheet(SHEET_ID, serviceAccountAuth);
     await doc.loadInfo();
+    console.log(`[Sheets] ✅ Spreadsheet connected: "${doc.title}"`);
 
-    
     sheet = doc.sheetsByIndex[0] || (await doc.addSheet({ title: 'Payments' }));
+    console.log(`[Sheets] ✅ Using sheet: "${sheet.title}"`);
 
     await ensureHeaders();
 
     isGoogleSheetsConfigured = true;
-    console.log('✅ Google Sheets initialized:', doc.title);
+    console.log('[Sheets] ✅ Google Sheets fully initialized and ready.');
     return true;
   } catch (error) {
-    console.warn('⚠️ Failed to initialize Google Sheets:', error.message);
-    console.warn('⚠️ Falling back to CSV logging.');
+    lastInitError = error.message;
+    console.error('[Sheets] ❌ Failed to initialize Google Sheets:');
+    console.error(`  Error name   : ${error.name}`);
+    console.error(`  Error message: ${error.message}`);
+    if (error.stack) {
+      console.error(`  Stack trace  :\n${error.stack}`);
+    }
+    // Log HTTP error details if present (Google API errors)
+    if (error.response) {
+      console.error(`  HTTP status  : ${error.response.status}`);
+      console.error(`  HTTP body    : ${JSON.stringify(error.response.data)}`);
+    }
+    console.warn('[Sheets] ⚠️ Falling back to CSV logging.');
     return false;
   }
 }
@@ -54,42 +92,65 @@ async function initializeGoogleSheets() {
 async function loadGoogleCredentials() {
   if (GOOGLE_CREDS_JSON) {
     const raw = GOOGLE_CREDS_JSON.trim();
+    console.log(`[Sheets] 🔍 Attempting to parse GOOGLE_CREDS_JSON (length=${raw.length}, first 30 chars: "${raw.substring(0, 30)}")`);
+
+    // Attempt 1: Direct JSON parse
     try {
-      return normalizeServiceAccount(JSON.parse(raw));
+      const parsed = JSON.parse(raw);
+      console.log('[Sheets] ✅ GOOGLE_CREDS_JSON parsed successfully as plain JSON.');
+      return normalizeServiceAccount(parsed);
     } catch (jsonError) {
+      console.warn(`[Sheets] ⚠️ Direct JSON parse failed: ${jsonError.message}`);
+    }
+
+    // Attempt 2: Base64-encoded JSON
+    try {
+      console.log('[Sheets] 🔄 Trying base64 decode of GOOGLE_CREDS_JSON...');
+      const decoded = Buffer.from(raw, 'base64').toString('utf8');
+      const parsed = JSON.parse(decoded);
+      console.log('[Sheets] ✅ GOOGLE_CREDS_JSON decoded from base64 successfully.');
+      return normalizeServiceAccount(parsed);
+    } catch (b64Error) {
+      console.warn(`[Sheets] ⚠️ Base64 decode/parse failed: ${b64Error.message}`);
+    }
+
+    // Attempt 3: Fall back to file path
+    if (GOOGLE_CREDS_PATH) {
+      console.log(`[Sheets] 🔄 Falling back to GOOGLE_CREDS_PATH: ${GOOGLE_CREDS_PATH}`);
       try {
-        const decoded = Buffer.from(raw, 'base64').toString('utf8');
-        return normalizeServiceAccount(JSON.parse(decoded));
-      } catch (parseError) {
-        // If parsing the env var failed, try falling back to credential file paths
-        if (GOOGLE_CREDS_PATH) {
-          try {
-            const credsPath = path.resolve(GOOGLE_CREDS_PATH);
-            const credsContent = await fs.readFile(credsPath, 'utf8');
-            return normalizeServiceAccount(JSON.parse(credsContent));
-          } catch (fileErr) {
-            throw new Error(`Invalid GOOGLE_CREDS_JSON and failed to read file at GOOGLE_CREDS_PATH: ${fileErr.message}`);
-          }
-        }
-
-        // Also try GOOGLE_APPLICATION_CREDENTIALS if set (common pattern)
-        if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-          try {
-            const appCredsPath = path.resolve(process.env.GOOGLE_APPLICATION_CREDENTIALS);
-            const appCredsContent = await fs.readFile(appCredsPath, 'utf8');
-            return normalizeServiceAccount(JSON.parse(appCredsContent));
-          } catch (appFileErr) {
-            throw new Error(`Invalid GOOGLE_CREDS_JSON and failed to read file at GOOGLE_APPLICATION_CREDENTIALS: ${appFileErr.message}`);
-          }
-        }
-
-        throw new Error(`Invalid GOOGLE_CREDS_JSON/GOOGLE_CREDENTIALS_JSON value: ${parseError.message}`);
+        const credsPath = path.resolve(GOOGLE_CREDS_PATH);
+        const credsContent = await fs.readFile(credsPath, 'utf8');
+        console.log('[Sheets] ✅ Credentials loaded from file path fallback.');
+        return normalizeServiceAccount(JSON.parse(credsContent));
+      } catch (fileErr) {
+        throw new Error(`GOOGLE_CREDS_JSON invalid AND GOOGLE_CREDS_PATH file unreadable: ${fileErr.message}`);
       }
     }
+
+    // Attempt 4: GOOGLE_APPLICATION_CREDENTIALS env var
+    if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+      console.log(`[Sheets] 🔄 Trying GOOGLE_APPLICATION_CREDENTIALS: ${process.env.GOOGLE_APPLICATION_CREDENTIALS}`);
+      try {
+        const appCredsPath = path.resolve(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+        const appCredsContent = await fs.readFile(appCredsPath, 'utf8');
+        console.log('[Sheets] ✅ Credentials loaded from GOOGLE_APPLICATION_CREDENTIALS.');
+        return normalizeServiceAccount(JSON.parse(appCredsContent));
+      } catch (appFileErr) {
+        throw new Error(`GOOGLE_CREDS_JSON invalid AND GOOGLE_APPLICATION_CREDENTIALS file unreadable: ${appFileErr.message}`);
+      }
+    }
+
+    throw new Error(`GOOGLE_CREDS_JSON could not be parsed as JSON or base64, and no fallback file path is set.`);
   }
 
+  // No JSON env var — try file path directly
+  if (!GOOGLE_CREDS_PATH) {
+    throw new Error('No credentials source available: set GOOGLE_CREDS_JSON or GOOGLE_CREDS_PATH.');
+  }
+  console.log(`[Sheets] 🔄 Loading credentials from file: ${GOOGLE_CREDS_PATH}`);
   const credsPath = path.resolve(GOOGLE_CREDS_PATH);
   const credsContent = await fs.readFile(credsPath, 'utf8');
+  console.log('[Sheets] ✅ Credentials loaded from file.');
   return normalizeServiceAccount(JSON.parse(credsContent));
 }
 
@@ -98,9 +159,19 @@ function normalizeServiceAccount(credentials) {
     throw new Error('Service account credentials must be an object');
   }
 
+  if (!credentials.client_email) {
+    throw new Error('Service account JSON is missing "client_email" field.');
+  }
+  if (!credentials.private_key) {
+    throw new Error('Service account JSON is missing "private_key" field.');
+  }
+
   if (typeof credentials.private_key === 'string') {
-    // Handle escaped newlines (common when stored in env vars)
-    credentials.private_key = credentials.private_key.replace(/\\n/g, '\n');
+    // Handle escaped newlines — Render / other hosts sometimes double-escape them.
+    // Replace literal '\n' sequences (both single and double escaped) with actual newlines.
+    credentials.private_key = credentials.private_key
+      .replace(/\\\\n/g, '\n')  // handle \\n (double-escaped)
+      .replace(/\\n/g, '\n');   // handle \n (single-escaped)
   }
 
   return credentials;
@@ -400,7 +471,9 @@ async function getAllPayments() {
 }
 
 // Initialize on module load
-initializeGoogleSheets().catch(console.error);
+initializeGoogleSheets().catch((err) => {
+  console.error('[Sheets] ❌ Unhandled error during initializeGoogleSheets():', err);
+});
 
 module.exports = {
   logPaymentToSheet,
@@ -408,6 +481,7 @@ module.exports = {
   getAllPayments,
   initializeGoogleSheets,
   isGoogleSheetsConfigured: () => isGoogleSheetsConfigured,
-  doc,
-  sheet
+  getLastInitError: () => lastInitError,
+  getDoc: () => doc,
+  getSheet: () => sheet,
 };

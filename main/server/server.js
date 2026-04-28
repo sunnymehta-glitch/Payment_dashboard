@@ -8,6 +8,7 @@ const logsController = require('./controllers/logsController');
 const dashboardController = require('./controllers/dashboardController');
 const whatsappController = require('./controllers/whatsappController');
 const sheetMonitor = require('./services/sheetMonitor');
+const sheetsService = require('./services/sheets');
 
 
 const app = express();
@@ -32,6 +33,28 @@ app.get('/health', (req, res) => {
   const baseUrl = explicitBase || derivedBase;
 
   res.json({ status: 'ok', timestamp: new Date().toISOString(), baseUrl });
+});
+
+// 🔍 Diagnostic: Google Sheets initialization status
+app.get('/sheets-status', (req, res) => {
+  const configured = sheetsService.isGoogleSheetsConfigured();
+  const lastError = sheetsService.getLastInitError();
+  res.json({
+    googleSheetsConfigured: configured,
+    lastInitError: lastError || null,
+    env: {
+      SHEET_ID: process.env.SHEET_ID ? `set (${process.env.SHEET_ID})` : '❌ NOT SET',
+      GOOGLE_CREDS_JSON: process.env.GOOGLE_CREDS_JSON
+        ? `✅ set (length=${process.env.GOOGLE_CREDS_JSON.length})`
+        : '❌ NOT SET',
+      GOOGLE_CREDENTIALS_JSON: process.env.GOOGLE_CREDENTIALS_JSON
+        ? `✅ set (length=${process.env.GOOGLE_CREDENTIALS_JSON.length})`
+        : '(not set)',
+      GOOGLE_CREDS_PATH: process.env.GOOGLE_CREDS_PATH || '(not set)',
+      ENABLE_SHEET_MONITORING: process.env.ENABLE_SHEET_MONITORING || '(not set)',
+    },
+    timestamp: new Date().toISOString()
+  });
 });
 
 // Error handling middleware
