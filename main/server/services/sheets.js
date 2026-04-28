@@ -1,5 +1,5 @@
 const { GoogleSpreadsheet } = require('google-spreadsheet');
-const { JWT } = require('google-auth-library');
+const { GoogleAuth } = require('google-auth-library');
 const fs = require('fs').promises;
 const path = require('path');
 const logger = require('../utils/logger');
@@ -50,11 +50,15 @@ async function initializeGoogleSheets() {
     console.log(`[Sheets]    private_key present: ${credentials.private_key ? 'YES' : '❌ NO'}`);
     console.log(`[Sheets]    private_key starts with: ${credentials.private_key ? credentials.private_key.substring(0, 40) : 'N/A'}`);
 
-    // Initialize JWT auth
-    const serviceAccountAuth = new JWT({
-      email: credentials.client_email,
-      key: credentials.private_key,
-      scopes: ['https://www.googleapis.com/auth/spreadsheets']
+    // Use GoogleAuth with serviceAccountCredentials — compatible with google-auth-library v9
+    // (JWT constructor API changed in v9 and breaks google-spreadsheet v4's loadInfo())
+    console.log('[Sheets] 🔄 Building GoogleAuth client...');
+    const serviceAccountAuth = new GoogleAuth({
+      credentials: {
+        client_email: credentials.client_email,
+        private_key: credentials.private_key,
+      },
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
 
     // Initialize Google Spreadsheet
