@@ -36,3 +36,5 @@ coverage/
 .vercel
 
 !main/server/package.json
+
+main/server/credentials/*.json
