@@ -9,6 +9,9 @@ const OUTSTANDING_STATUSES = new Set([
   'overdue',
   'created',
   'draft',
+  'sent',          // Zoho: invoice emailed to customer, not yet paid
+  'issued',        // similar to sent
+  'invoice sent',
   'issue',
   'risk',
   'follow up',
