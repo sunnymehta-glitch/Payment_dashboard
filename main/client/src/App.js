@@ -79,7 +79,7 @@ function App() {
   const toggleTheme = () => setTheme(prev => prev === 'light' ? 'dark' : 'light');
   const toggleSidebar = () => setSidebarCollapsed(prev => !prev);
 
-  const API_BASE = process.env.REACT_APP_API_BASE || '/api';
+  const API_BASE = process.env.REACT_APP_API_BASE;
 
   const fetchPayments = useCallback(async () => {
     setPaymentsLoading(true);
