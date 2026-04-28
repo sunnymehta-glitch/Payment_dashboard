@@ -140,22 +140,36 @@ async function initializeGoogleSheets() {
   try {
     const creds = await loadGoogleCredentials();
 
-    // Use options-object form — positional args are deprecated in google-auth-library v9
-    console.log(`[Sheets] 🔍 private_key length=${creds.private_key.length}, starts="${creds.private_key.substring(0, 36)}"`);
-    const auth = new google.auth.JWT({
-      email: creds.client_email,
-      key:   creds.private_key,
+    // Log private_key details to diagnose any corruption
+    const pk = creds.private_key;
+    console.log(`[Sheets] 🔍 private_key: length=${pk.length}`);
+    console.log(`[Sheets]    first 27 chars : "${pk.substring(0, 27)}"`);
+    console.log(`[Sheets]    last  25 chars : "${pk.substring(pk.length - 25)}"`);
+    console.log(`[Sheets]    has actual \\n  : ${pk.includes('\n')}`);
+    console.log(`[Sheets]    has literal \\\\n : ${pk.includes('\\n')}`);
+    console.log(`[Sheets]    has \\r         : ${pk.includes('\r')}`);
+
+    // Use GoogleAuth with full credentials — handles JWT signing internally
+    // This avoids any manual key-passing that can corrupt RSA signatures.
+    const auth = new google.auth.GoogleAuth({
+      credentials: {
+        type:            creds.type || 'service_account',
+        client_email:    creds.client_email,
+        private_key:     creds.private_key,
+        private_key_id:  creds.private_key_id,
+        project_id:      creds.project_id,
+        client_id:       creds.client_id,
+      },
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
 
-    console.log('[Sheets] 🔄 Authorizing JWT...');
-    await auth.authorize();
-    console.log('[Sheets] ✅ JWT authorized successfully.');
-
-    sheetsClient = google.sheets({ version: 'v4', auth });
+    console.log('[Sheets] 🔄 Getting auth client...');
+    const authClient = await auth.getClient();
+    console.log('[Sheets] ✅ Auth client obtained.');
 
     // Verify access by fetching spreadsheet metadata
     console.log(`[Sheets] 🔄 Verifying spreadsheet access (ID: ${SHEET_ID})...`);
+    sheetsClient = google.sheets({ version: 'v4', auth: authClient });
     const meta = await sheetsClient.spreadsheets.get({ spreadsheetId: SHEET_ID });
     console.log(`[Sheets] ✅ Spreadsheet found: "${meta.data.properties.title}"`);
 
